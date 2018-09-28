@@ -15,7 +15,8 @@ var Options = {
   verbose: true, 
   attempts: 5, //reconnection attempts before reboot
   pin: D12, //output pin for LED indicator. pulse when connection. use D1, D2 etc.
-  pin_blink_interval: 1000 //milliseconds
+  wifi_blink_interval: 1000, //milliseconds
+  mqtt_blink_interval: 100, //milliseconds
 }
 
 var Context = {
@@ -51,14 +52,14 @@ function pin_setup() {
     Options.pin.reset();
 }
 
-function pin_blink() {
+function pin_blink(interval) {
   if (!Options.pin)
     return;
   if (Context.pin_blink_interval) {
     clearInterval(Context.pin_blink_interval);
     Context.pin_blink_interval = 0;
   }
-    Context.pin_blink_interval = setInterval(function() { Options.pin.toggle(); }, Options.pin_blink_interval); 
+    Context.pin_blink_interval = setInterval(function() { Options.pin.toggle(); }, interval); 
 }
 
 function pin_noblink() {
@@ -86,7 +87,7 @@ function wifi_connect() {
   }
   wifi_clear_connection_timeout();
   pin_setup();
-  pin_blink();
+  pin_blink(Options.wifi_blink_interval);
   say('connecting to ' + Thing.ssid + ' as ' + Thing.name + '...');
   wifi.setHostname(Thing.name);
   wifi.connect(Thing.ssid, { password: Thing.pass }, wifi_connection_error);
@@ -235,7 +236,7 @@ function mqtt_connect() {
     }
   }, Options.connect_timeout * 1000);
   
-  pin_blink();
+  pin_blink(Options.mqtt_blink_interval);
   Context.mqtt.connect();
 }
 
