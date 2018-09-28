@@ -7,12 +7,16 @@ var Thing = {
   ssid: '',
   pass: '',
   mqtt: '', //address
-  connect_timeout: 60, //seconds
+};
+
+var Options = {
+  connect_timeout: 10, //seconds
   ping_interval: 120,  //seconds
   verbose: true, 
   attempts: 5, //reconnection attempts before reboot
-  nntp: 'ntp1.stratum2.ru'; //NNTP server
-};
+  pin: D12, //output pin for LED indicator. pulse when connection. use D1, D2 etc.
+  pin_blink_interval: 1000 //milliseconds
+}
 
 var Context = {
   wifi_connected: false,
@@ -21,13 +25,50 @@ var Context = {
   wifi_connection_timeout: 0,
   mqtt: null,
   attempts: 0,
+  pin_blink_interval: 0,
 };
+
+var Pinger = {
+  interval: 0,
+  pinged: false,	
+  time1: 0,
+  time2: 0,
+};
+
+const NNTP = 'ntp1.stratum2.ru';
 
 var wifi = require('Wifi');
 
 function say(msg) {
-	if (Thing.verbose)
+	if (Options.verbose)
 		console.log(msg);
+}
+
+function pin_setup() {
+  if (!Options.pin)
+    return;
+    Options.pin.mode('output');
+    Options.pin.reset();
+}
+
+function pin_blink() {
+  if (!Options.pin)
+    return;
+  if (Context.pin_blink_interval) {
+    clearInterval(Context.pin_blink_interval);
+    Context.pin_blink_interval = 0;
+  }
+    Context.pin_blink_interval = setInterval(function() { Options.pin.toggle(); }, Options.pin_blink_interval); 
+}
+
+function pin_noblink() {
+  if (!Options.pin)
+    return;
+  if (Context.pin_blink_interval) {
+    clearInterval(Context.pin_blink_interval);
+    Context.pin_blink_interval = 0;
+  }
+  Options.pin.set();  
 }
 
 function check_thing() {
@@ -44,17 +85,19 @@ function wifi_connect() {
     return;
   }
   wifi_clear_connection_timeout();
+  pin_setup();
+  pin_blink();
   say('connecting to ' + Thing.ssid + ' as ' + Thing.name + '...');
   wifi.setHostname(Thing.name);
   wifi.connect(Thing.ssid, { password: Thing.pass }, wifi_connection_error);
 }
 
 function wifi_reconnect() {
- 	if (Context.attempts < Thing.attempts) {
+ 	if (Context.attempts < Options.attempts) {
   		Context.attempts++;
-		say('trying to reconnect to ' + Thing.ssid + ' in ' + Thing.connect_timeout + 's, ' 
-		+ ' attempt ' + Context.attempts + ' of ' + Thing.attempts + '...');
-	    Context.wifi_connection_timeout = setTimeout(wifi_connect, Thing.connect_timeout * 1000);
+		say('trying to reconnect to ' + Thing.ssid + ' in ' + Options.connect_timeout + 's, ' 
+		+ ' attempt ' + Context.attempts + ' of ' + Options.attempts + '...');
+	    Context.wifi_connection_timeout = setTimeout(wifi_connect, Options.connect_timeout * 1000);
     } else {
     	say('attempts are over, rebooting...');
     	E.reboot();
@@ -79,6 +122,7 @@ function wifi_connected() {
   Context.wifi_connected = true;
   Context.attempts = 0;
   wifi_clear_connection_timeout();
+  pin_noblink();
   wifi.stopAP();
   say('wifi connected as ' + wifi.getHostname());
   say(wifi.getIP());
@@ -98,6 +142,44 @@ function wifi_disconnected(err) {
 
   Context.attempts = 0;
   wifi.emit('reconnect');
+}
+
+//function mqtt_ping() {
+//  if (!Context.mqtt_connected)
+//    return;
+//  if (!Context.mqtt)
+//    return;
+//  if (!Context.mqtt.connected)
+//    mqtt_disconnected();
+//}
+
+function mqtt_pinger_setup() {
+	if (Pinger.interval) {
+		clearInterval(Pinger.interval);
+		Pinger.interval = 0;
+	}
+	Pinger.interval = setInterval(mqtt_ping, Options.ping_interval * 1000);
+}
+
+function mqtt_pong() {
+  	if (Pinger.pinged)
+  		return;
+  	Pinger.pinged = true;	
+  	Pinger.time2 = getTime();
+  	let delta = Pinger.time2 - Pinger.time1;
+  	say('pong! ' + delta);
+}
+
+function mqtt_ping() {
+  if (!Context.wifi_connected)
+  	return;
+  say('reconnect mqtt instead of ping');
+  Context.mqtt.disconnect();
+  
+  //Pinger.pinged = false;
+  //Pinger.time1 = getTime();
+  //say('ping...');
+  //wifi.ping(Thing.mqtt, mqtt_pong);
 }
 
 function clear_mqtt_connection_timeout() {
@@ -142,23 +224,26 @@ function mqtt_connect() {
   }
   
   Context.mqtt_connection_timeout = setTimeout(function() {
-  	if (Context.attempts < Thing.attempts) {
+  	if (Context.attempts < Options.attempts) {
   		Context.attempts++;
-		say('mqtt connect timeout, trying to reconnect in ' + Thing.connect_timeout + 's, ' 
-		+ ' attempt ' + Context.attempts + ' of ' + Thing.attempts + '...');
+		say('mqtt connect timeout, trying to reconnect in ' + Options.connect_timeout + 's, ' 
+		+ ' attempt ' + Context.attempts + ' of ' + Options.attempts + '...');
     	mqtt_connect();
     } else {
     	say('attempts are over, rebooting...');
     	E.reboot();
     }
-  }, Thing.connect_timeout * 1000);
+  }, Options.connect_timeout * 1000);
   
+  pin_blink();
   Context.mqtt.connect();
 }
 
 function mqtt_connected() {
   clear_mqtt_connection_timeout();
+  pin_noblink();
   Context.mqtt_connected = true;  
+  mqtt_pinger_setup(); 
   say('mqtt connected');
   Thing.emit('connected');
 }
@@ -170,8 +255,8 @@ function mqtt_disconnected() {
   if (!Context.wifi_connected)
       return;  
   Thing.emit('disconnected');      
-  say('mqtt_disconnected, trying to reconnect in ' + Thing.connect_timeout + 's...');
-  setTimeout(mqtt_connect, Thing.connect_timeout * 1000);
+  say('mqtt_disconnected, trying to reconnect in ' + Options.connect_timeout + 's...');
+  setTimeout(mqtt_connect, Options.connect_timeout * 1000);
 }
 
 wifi.on('connected', wifi_connected);
@@ -180,6 +265,10 @@ wifi.on('reconnect', wifi_reconnect);
 wifi.on('wifi', mqtt_connect);
 
 exports.Thing = Thing;
+exports.options = Options;
 exports.mqtt = function() { return Context.mqtt; };
 exports.is_connected = function() { return Context.mqtt_connected; }
 exports.connect = wifi_connect;
+
+
+
