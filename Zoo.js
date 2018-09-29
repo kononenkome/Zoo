@@ -10,10 +10,11 @@ var Thing = {
 };
 
 var Options = {
-  connect_timeout: 10, //seconds
-  ping_interval: 120,  //seconds
   verbose: true, 
-  attempts: 5, //reconnection attempts before reboot
+  attempts: 5, //reconnection attempts before reboot  
+  connect_timeout: 30, //seconds
+  mqtt_ping_interval: 120,  //seconds
+  mqtt_ping_timeout: 1000,  //milliseconds
   pin: D12, //output pin for LED indicator. pulse when connection. use D1, D2 etc.
   wifi_blink_interval: 1000, //milliseconds
   mqtt_blink_interval: 100, //milliseconds
@@ -27,13 +28,9 @@ var Context = {
   mqtt: null,
   attempts: 0,
   pin_blink_interval: 0,
-};
-
-var Pinger = {
-  interval: 0,
-  pinged: false,	
-  time1: 0,
-  time2: 0,
+  mqtt_ping_interval: 0,
+  mqtt_ping_timeout: 0, 
+  pinged: false,
 };
 
 const NNTP = 'ntp1.stratum2.ru';
@@ -145,49 +142,61 @@ function wifi_disconnected(err) {
   wifi.emit('reconnect');
 }
 
-//function mqtt_ping() {
-//  if (!Context.mqtt_connected)
-//    return;
-//  if (!Context.mqtt)
-//    return;
-//  if (!Context.mqtt.connected)
-//    mqtt_disconnected();
-//}
-
-function mqtt_pinger_setup() {
-	if (Pinger.interval) {
-		clearInterval(Pinger.interval);
-		Pinger.interval = 0;
-	}
-	Pinger.interval = setInterval(mqtt_ping, Options.ping_interval * 1000);
+function mqtt_pong() {
+  if (!Context.wifi_connected)
+    return;
+  if (!Context.mqtt_connected)
+    return;
+  if (Context.pinged)
+    return;
+  Context.pinged = true;	
+  mqtt_clear_ping_timeout();  
+  say('mqtt pong! ');
 }
 
-function mqtt_pong() {
-  	if (Pinger.pinged)
-  		return;
-  	Pinger.pinged = true;	
-  	Pinger.time2 = getTime();
-  	let delta = Pinger.time2 - Pinger.time1;
-  	say('pong! ' + delta);
+function mqtt_nopong() {  
+  say('mqtt ping timeout, reboot...');
+  E.reboot(); //because many memory problems with MQTT reconnect
 }
 
 function mqtt_ping() {
   if (!Context.wifi_connected)
-  	return;
-  say('reconnect mqtt instead of ping');
-  Context.mqtt.disconnect();
-  
-  //Pinger.pinged = false;
-  //Pinger.time1 = getTime();
-  //say('ping...');
-  //wifi.ping(Thing.mqtt, mqtt_pong);
+    return; 
+  say('mqtt ping...');
+  Context.pinged = false;   
+  Context.mqtt_ping_timeout = setTimeout(mqtt_nopong, Options.mqtt_ping_timeout);
+  wifi.ping(Thing.mqtt, mqtt_pong);
 }
 
-function clear_mqtt_connection_timeout() {
+function mqtt_clear_connection_timeout() {
   if (Context.mqtt_connection_timeout) 
     clearTimeout(Context.mqtt_connection_timeout);
   Context.mqtt_connection_timeout = 0;
 }
+function mqtt_clear_ping_timeout() {
+  if (Context.mqtt_ping_timeout) {
+    clearTimeout(Context.mqtt_ping_timeout);
+    Context.mqtt_ping_timeout = 0;
+  }
+}
+function mqtt_clear_ping_interval() {
+  if (Context.mqtt_ping_interval) {
+    clearInterval(Context.mqtt_ping_interval);
+    Context.mqtt_ping_interval = 0;
+  }
+  mqtt_clear_ping_timeout();
+}
+
+var mqtt_options = { // ALL OPTIONAL - the defaults are below
+  client_id: Thing.name,   // the client ID sent to MQTT - it's a good idea to define your own static one based on `getSerial()` 
+  keep_alive: 60,         // keep alive time in seconds
+  port: 1883,             // port number
+  clean_session: true,
+  //  username: "username",   // default is undefined
+  //  password: "password",   // default is undefined
+  protocol_name: "MQTT",  // or MQIsdp, etc..
+  protocol_level: 4,      // protocol level
+};    
 
 function mqtt_connect() {
   if (!Context.wifi_connected)
@@ -205,24 +214,13 @@ function mqtt_connect() {
   
   say('connecting to mqtt broker ' + Thing.mqtt + '...');
   
-  clear_mqtt_connection_timeout();
-  
-  let options = { // ALL OPTIONAL - the defaults are below
-    client_id: Thing.name,   // the client ID sent to MQTT - it's a good idea to define your own static one based on `getSerial()` 
-    keep_alive: 60,         // keep alive time in seconds
-    port: 1883,             // port number
-    clean_session: true,
-    //  username: "username",   // default is undefined
-    //  password: "password",   // default is undefined
-    protocol_name: "MQTT",  // or MQIsdp, etc..
-    protocol_level: 4,      // protocol level
-  };    
-
   if (!Context.mqtt) {
-    Context.mqtt = require("MQTT").create(Thing.mqtt, options);
-    Context.mqtt.on('connected', function() { mqtt_connected(); });
-    Context.mqtt.on('disconnected', function() { mqtt_disconnected(); });
+    Context.mqtt = require('MQTT').create(Thing.mqtt, mqtt_options);
+    Context.mqtt.on('connected', mqtt_connected);
+    Context.mqtt.on('disconnected', mqtt_disconnected);
   }
+
+  mqtt_clear_connection_timeout();
   
   Context.mqtt_connection_timeout = setTimeout(function() {
   	if (Context.attempts < Options.attempts) {
@@ -237,14 +235,16 @@ function mqtt_connect() {
   }, Options.connect_timeout * 1000);
   
   pin_blink(Options.mqtt_blink_interval);
+  
   Context.mqtt.connect();
 }
 
 function mqtt_connected() {
-  clear_mqtt_connection_timeout();
-  pin_noblink();
-  Context.mqtt_connected = true;  
-  mqtt_pinger_setup(); 
+  pin_noblink();  
+  mqtt_clear_connection_timeout();
+  mqtt_clear_ping_interval(); 
+  Context.mqtt_ping_interval = setInterval(mqtt_ping, Options.mqtt_ping_interval * 1000);
+  Context.mqtt_connected = true;   
   say('mqtt connected');
   Thing.emit('connected');
 }
@@ -255,8 +255,10 @@ function mqtt_disconnected() {
   Context.mqtt_connected = false; 
   if (!Context.wifi_connected)
       return;  
+  mqtt_clear_ping_interval();  
   Thing.emit('disconnected');      
   say('mqtt_disconnected, trying to reconnect in ' + Options.connect_timeout + 's...');
+  mqtt_clear_connection_timeout()  
   setTimeout(mqtt_connect, Options.connect_timeout * 1000);
 }
 
