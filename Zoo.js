@@ -2,7 +2,7 @@
 //(c) 2018 by Mr.Parker
 const VERSION = 0.1;
 
-var Thing = {
+var Thing = { 
   name: '',
   ssid: '',
   pass: '',
