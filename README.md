@@ -11,4 +11,3 @@ There two events emits:
 Zoo.Thing.on('connected)
 Zoo.Thing.on('disconnected)
 
-There is no mechanism for reconnect to MQTT if MQTT server lost power. Ping functionality will be added when Wifi.ping will be fixed (memory leaks now).
