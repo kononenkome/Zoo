@@ -11,3 +11,4 @@ There two events emits:
 Zoo.Thing.on('connected)
 Zoo.Thing.on('disconnected)
 
+ESP-12 memory if not enough for two sensors ((
